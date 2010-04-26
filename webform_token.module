@@ -1,0 +1,143 @@
+<?php
+
+// Unique string to encrypt the token with.
+define('WEBFORM_TOKEN_SALT', '1BB5D70DF6D7EFB5AB16F621D9C1E5B7CD19CA62F03A22EB1F0A378EDFBAD8E5');
+
+// Default lifetime of tokens.
+define('WEBFORM_TOKEN_LIFE', 30);
+
+/**
+ * Define webform nodes that require tokens.
+ */
+function webform_token_nodes() {
+  return array(
+    1 => array('#redirect' => 'http://www.example.com/', '#life' => 120),
+  );
+}
+
+/**
+ * Implementation of hook_perm().
+ */
+function webform_token_perm() {
+  return array('bypass webform tokens');
+}
+
+/**
+ * Implementation of hook_menu().
+ */
+function webform_token_menu() {
+  return array(
+    'node/%webform_token_menu/token/generate' => array(
+      'title' => 'Generate token',
+      'page callback' => 'webform_token_generate_callback',
+      'page arguments' => array(1),
+      'access callback' => 'user_access',
+      'access arguments' => array('access content'),
+      'type' => MENU_CALLBACK,
+    ),
+    'node/%webform_token_menu/token/verify/%' => array(
+      'title' => 'Verify token',
+      'page callback' => 'webform_token_verify_callback',
+      'page arguments' => array(1, 4),
+      'access callback' => 'user_access',
+      'access arguments' => array('access content'),
+      'type' => MENU_CALLBACK,
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_menu_load().
+ */
+function webform_token_menu_load($nid) {
+  if ( !is_numeric($nid) ) {
+    return FALSE;
+  }
+  
+  $node = node_load($nid);
+  if ( !isset($node->type) || !in_array( $node->type, webform_variable_get('webform_node_types') ) ) {
+    return FALSE;
+  }
+  
+  return $node;
+}
+
+/**
+ * Implementation of hook_form_alter().
+ */
+function webform_token_form_alter(&$form, &$form_state, $form_id) {
+  
+  // Ensure we only check webform client forms and only for users that don't have access to bypass tokens.
+  if ( strpos($form_id, 'webform_client_form') !== FALSE && !user_access('bypass webform tokens') ) {
+    $token_nodes = webform_token_nodes();
+    $nid = $form['details']['nid']['#value'];
+    
+    if ( isset($form['details']['nid']['#value']) && array_key_exists($nid, $token_nodes) ) {
+      
+      // Check if we already have a saved token.
+      $token = isset($form_state['post']['webform_token']) ? $form_state['post']['webform_token'] : NULL;
+      
+      // Set a webform_token entry in the form and populate with ?token or saved token from previous form.
+      $form['webform_token'] = array(
+        '#type' => 'hidden',
+        '#id' => 'webform_token',
+        '#value' => isset($_GET['token']) ? $_GET['token'] : $token,
+      );
+      
+      // If there is no token or if there is a token but invalid then redirect the user.
+      if ( !isset($form['webform_token']['#value']) || ( isset($form['webform_token']['#value']) && !webform_token_verify($form['webform_token']['#value'], $nid, isset($token_nodes[$nid]['#life']) ? $token_nodes[$nid]['#life'] : WEBFORM_TOKEN_LIFE) ) ) {
+        drupal_goto($token_nodes[$nid]['#redirect']);
+      }
+    }
+  }
+}
+
+/**
+ * Callback to generate token.
+ */
+function webform_token_generate_callback($node) {
+  //drupal_goto('node/'. $node->nid, 'token='. webform_token_generate($node->nid));
+  
+  header("Cache-Control: no-cache, must-revalidate");
+  header("Expires: Sat, 26 Jul 1997 05:00:00 GMT"); // Date in the past to prevent caching
+  
+  $callback = isset($_GET['callback']) ? $_GET['callback'] : NULL;
+  
+  echo $callback .'('. json_encode(array('token' => webform_token_generate($node->nid))) .');';
+}
+
+/**
+ * Callback to verify token.
+ */
+function webform_token_verify_callback($node, $token) {
+  header("Cache-Control: no-cache, must-revalidate");
+  header("Expires: Sat, 26 Jul 1997 05:00:00 GMT"); // Date in the past to prevent caching
+  
+  echo webform_token_verify($token, $node->nid) ? "valid" : "invalid";
+}
+
+/**
+ * Generate a timed hash token.
+ */
+function webform_token_generate($data, $salt = WEBFORM_TOKEN_SALT) {
+  return sha1($data . $salt . time());
+}
+
+/**
+ * Verify a timed hash token.
+ */
+function webform_token_verify($token, $data, $life = WEBFORM_TOKEN_LIFE, $salt = WEBFORM_TOKEN_SALT) {
+  $time = time();
+  
+  if ( $token == sha1($data . $salt . $time) ) {
+    return TRUE;
+  }
+  
+  for ( $offset = 1; $offset <= $life; $offset++ ) {
+    if ( $token == sha1( $data . $salt . ($time - $offset) ) ) {
+      return TRUE;
+    }
+  }
+  
+  return FALSE;
+}
